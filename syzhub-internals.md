@@ -83,6 +83,22 @@ purging corpus...
 done, 10 programs
 ```
 
+## How connections are handled?
+
+`Hub` is the central type for handling connections. It has the folowing interface:
+
+```text
+Hub
+- Connect(a *rpctype.HubConnectArgs, r *int) error
+- Sync(a *rpctype.HubSyncArgs, r *rpctype.HubSyncRes) error
+- verifyKey(key, expectedKey string) error 
+- checkManager(client, key, manager string) (string, error)
+```
+
+Hub checks syz-manager eligibility when it connects and when it synchronizes with it. `checkManager` uses `hub_client` (a setting in syz-manager config) to find a key and then validates the provided key. `verifyKey` uses two methods:
+- char by char comparison
+- using OAuth magic (TODO: What is it?) which assumes experation of a ticket
+If the key has matched then its time to assign a name to the connected syz-manager. If the name was empty then `hub_client` is used. Otherwise manager name must start with `client_hub`, for example: andrey1 and andrey1-p21 - client_hub and manager name respectively. 
 
 ## Handshake protocol
 
