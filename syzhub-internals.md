@@ -14,13 +14,18 @@ Beware of the following Syz-Hub behavior:
 
 ## Code structure
 Syz-Hub is implemented in three files (excluding tests) and all of them are located in syz-hub <a href="https://github.com/google/syzkaller/tree/master/syz-hub">directory:</a>
-- <a href="https://github.com/google/syzkaller/blob/master/syz-hub/state/state.go">state/state.go</a>
-- <a href="https://github.com/google/syzkaller/blob/master/syz-hub/http.go">http.go</a>
+- <a href="https://github.com/google/syzkaller/blob/master/syz-hub/state/state.go">state/state.go</a> - code for working with corpus.db
+- <a href="https://github.com/google/syzkaller/blob/master/syz-hub/http.go">http.go</a> - runs http server for web-interface in a separate thread. 
 - <a href="https://github.com/google/syzkaller/blob/master/syz-hub/hub.go">hub.go</a>
+
+Refers to syzkaller packages:
+- db
+- auth
+- rpctype
 
 ## Configuration
 
-The configuration for syz-hub looks like this:
+Syz-hub has only a single argument `-config` which accepts a path to a config file. The configuration for syz-hub looks like this:
 
 ```json
 {
@@ -54,3 +59,30 @@ workdir/
 │  ├─ manager2/
 │  │  ├─ ............
 ```
+- `mali0_corpus.db`
+- `corpus.db`
+- `repro.db` - has the same data-format as corpus.db
+- `manager`
+- `manager#\corpus.db`
+- `manager#\domain`
+- `manager#\repro.seq`
+- `manager#\seq`
+
+
+## Startup sequence
+
+Main function is located in <a href="https://github.com/google/syzkaller/blob/master/syz-hub/hub.go">hub.go</a>. The code loades provided config file, creates a workdir as specified in config and initializes http and RPC servers.
+
+At startup syz-hub visits `manager` folder and loads corpus stored for each manager. After this setup it calls `pureCorpus` which does the following (see `state.Make`):
+1. Iterate over all managers and note unique signatures of corpus stored in their corpus.db instances.
+2. Inspect it's own corpus.db records and delete the ones not found in manager's databases.
+
+`purgeCorpus` operation is surrounded by log messages:
+```bash
+purging corpus...
+done, 10 programs
+```
+
+
+## Handshake protocol
+
