@@ -73,7 +73,7 @@ workdir/
 
 Main function is located in <a href="https://github.com/google/syzkaller/blob/master/syz-hub/hub.go">hub.go</a>. The code loades provided config file, creates a workdir as specified in config and initializes http and RPC servers.
 
-At startup syz-hub visits `manager` folder and loads corpus stored for each manager. After this setup it calls `pureCorpus` which does the following (see `state.Make`):
+At startup syz-hub visits `manager` folder and loads corpus stored for each manager. After this setup it calls `purgeCorpus` which does the following:
 1. Iterate over all managers and note unique signatures of corpus stored in their corpus.db instances.
 2. Inspect it's own corpus.db records and delete the ones not found in manager's databases.
 
@@ -83,7 +83,7 @@ purging corpus...
 done, 10 programs
 ```
 
-## How connections are handled?
+## What happens when a new manager is connected?
 
 `Hub` is the central type for handling connections. It has the folowing interface:
 
@@ -100,5 +100,75 @@ Hub checks syz-manager eligibility when it connects and when it synchronizes wit
 - using OAuth magic (TODO: What is it?) which assumes experation of a ticket
 If the key has matched then its time to assign a name to the connected syz-manager. If the name was empty then `hub_client` is used. Otherwise manager name must start with `client_hub`, for example: andrey1 and andrey1-p21 - client_hub and manager name respectively. 
 
-## Handshake protocol
+The connection is handled via `Connect` which accepts syz-manager info as specified in config (`name`, `hub_client`, `hub_key`). It locks hub instance and at this moment you should see in output:
+```bash
+2022/07/13 22:00:10 connect from andrey1-p21: domain=linux/ fresh=true calls=89 corpus=0
+```
+The data you see here (domain, fresh, calls, corpus) is provided by the connected syz-manager. 
+The Hub instance immediately registers the new manager in the `state` instance which represents all manager as the following type:
 
+```go
+// Manager represents one syz-manager instance.
+type Manager struct {
+	name          string           // hub_client or name as decided by checkManager
+	Domain        string           // Domain provided by mgr ('linux' for example)
+	corpusSeq     uint64           // Number of corpus?
+	reproSeq      uint64           // Number of repro?
+	corpusFile    string           // workdir/mgr#/corpus.db
+	corpusSeqFile string           // Where corpusSeq is stored ('workdir/mgr#/seq' file)
+	reproSeqFile  string           // Where reproSeq is stored ('rworkdir/mgr#/epro.seq' file)
+	domainFile    string           // Where domain info stored (workdir/mgr#/domain)
+	ownRepros     map[string]bool
+	Connected     time.Time         // time.Now()
+	Added         int
+	Deleted       int
+	New           int
+	SentRepros    int
+	RecvRepros    int
+	Calls         map[string]struct{} // Calls received from syz-manager
+	Corpus        *db.DB            // DB manager to handle corpus.db
+}
+```
+
+The input received from manager comes as an array of bytes. It can be rejected due to a bad format or due to a number of calls bigger than allowed.
+Then State instance calculates signature of the received input as a hash and stores the hash only(!) in a local copy of the manager's DB. If the hash is not yet known to Syz-Hub then it is stored in the main corpus.db. So only unique inputs are present in the main corpus.db.
+
+## How synchronization happens?
+
+See `Sync` method inside <a href="https://github.com/google/syzkaller/blob/master/syz-hub/hub.go">hub.go</a>. It has two arguments 'a' (input from manager) and 'r' (results sent back). During each Sync Hub receives corpus to add and delete as well as request for repros.
+
+```text
+Input data:
+- manager info (name, key, hub_client)
+- corpus to add
+- corpus to delete
+- repros
+
+
+Ouput data:
+- Inputs or Progs
+- More
+- repros
+```
+
+At the end of the sync you should a log message like:
+```text
+2022/07/14 09:20:52 sync from andrey1-p21: recv: add=29 del=4 repros=0; send: progs=5 repros=0 pending=0
+```
+- `recv` - how many data was received from a manager    
+    - `add` - corpus to add
+    - `del` - corpus to delete
+    - `repro` - repro corpus to add
+- `send` - how many data was sent back as a result:
+    - `progs`
+    - `repros`
+    - `pending`
+
+Each Sync is followed by checking credentials of the manager. Then Hub acquires a lock and starts processing. Database update is delegated to the `State` instance. 
+```go
+hub.st.Sync(name, a.Add, a.Del)
+```
+First it checks whether the manager is known and connected. Otherwise you'll see 'unconnected manager manager-name'. Then it processes deletions. All signatures provided in delete list are removed from corresponding manager corpus.db copy and `purgeCorpus` is called which then removes them from main corpus.db
+Then corpus to add is processed. Now Manager instance has updated Added, Deleted and New fields.
+
+Now we are back to Hub instance. 
